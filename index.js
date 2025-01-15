@@ -45,7 +45,7 @@ function SliceFileName(filename) {
     const fromtime = `${match[2].slice(8, 10)}:${match[2].slice(10, 12)}:${match[2].slice(12, 14)}`;
     const totime = `${match[3].slice(8, 10)}:${match[3].slice(10, 12)}:${match[3].slice(12, 14)}`;
     const divisename = match[1];
-    console.log({ filename, divisename, date, fromtime, totime });
+   // console.log({ filename, divisename, date, fromtime, totime });
     return { filename, divisename, date, fromtime, totime };
   }
   return null;
@@ -76,7 +76,7 @@ const getSignedUrls = async (bucketName) => {
         if (extractedData) {
           const { filename, divisename, date, fromtime, totime } = extractedData;
           newUrls.push({ url, filename, divisename, date, fromtime, totime });
-          console.log(`Prepared URL: ${url} with extracted data:`, extractedData);
+          // console.log(`Prepared URL: ${url} with extracted data:`, extractedData);
         }
       }
 
@@ -86,7 +86,7 @@ const getSignedUrls = async (bucketName) => {
     if (newUrls.length > 0) {
       await testvidios.deleteMany({}, { session });  // Delete all existing documents in the collection
       await testvidios.insertMany(newUrls, { session });  // Insert new URLs
-      console.log(`Stored ${newUrls.length} new URLs.`);
+      // console.log(`Stored ${newUrls.length} new URLs.`);
     }
 
     await session.commitTransaction();  // Commit transaction
@@ -95,7 +95,7 @@ const getSignedUrls = async (bucketName) => {
   } catch (error) {
     await session.abortTransaction();  // Rollback transaction on error
     session.endSession();  // End session
-    console.error('Error fetching or storing signed URLs:', error);
+    // console.error('Error fetching or storing signed URLs:', error);
   }
 };
 
