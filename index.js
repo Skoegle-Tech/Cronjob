@@ -215,7 +215,8 @@ app.get("/find", async (req, res) => {
 
 
 app.get('/check-live', async (req, res) => {
-  const divisename = "Device-2"
+  const {divisename} = req.query
+  console.log(divisename)
   try {
     const now = new Date();
     const currentDate = now.toISOString().slice(0, 10);
