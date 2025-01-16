@@ -215,26 +215,12 @@ app.get("/find", async (req, res) => {
 
 
 app.get('/check-live', async (req, res) => {
-  const {divisename} = req.query
+
+  const { fromdate, todate, fromtime, totime,divisename  } = req.query;
   console.log(divisename)
   try {
-    const now = new Date();
-    const currentDate = now.toISOString().slice(0, 10);
-    const currentTime = now.toTimeString().slice(0, 8); 
-    const oneMinuteAgo = new Date(now.getTime() - 1.5 * 60 * 1000);
-    const oneMinuteAgoTime = oneMinuteAgo.toTimeString().slice(0, 8); 
-    const formatDate = (date) => {
-      const d = new Date(date);
-      const day = String(d.getDate()).padStart(2, "0");
-      const month = String(d.getMonth() + 1).padStart(2, "0");
-      const year = d.getFullYear();
-      return `${day}-${month}-${year}`;
-  };
 
- const datt= formatDate(currentDate)
-    // console.log(datt,oneMinuteAgoTime,currentTime)
-
-    const fromdate=datt,todate=datt,fromtime=oneMinuteAgoTime ,totime=currentTime
+   
    
     const query = {
       date: {
