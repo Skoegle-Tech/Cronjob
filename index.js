@@ -2,9 +2,12 @@ const { S3Client, ListObjectsV2Command, GetObjectCommand } = require('@aws-sdk/c
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 require('dotenv').config();
 const connectDB = require('mb64-connect');
+const mongoose = require('mongoose');
+const express = require('express');
+const app = express();
+const cors =require("cors")
 
-connectDB(process.env.MONGODB_URI);
-
+app.use(cors())
 const testvidios = connectDB.validation('testvidios', {
   url: { type: String, required: true },
   filename: { type: String, required: true },
@@ -13,6 +16,8 @@ const testvidios = connectDB.validation('testvidios', {
   fromtime: { type: String, required: false },
   totime: { type: String, required: false }
 }, { timestamps: false });
+
+connectDB(process.env.MONGODB_URI);
 
 const s3Client = new S3Client({
   region: process.env.AWS_REGION,
@@ -40,6 +45,7 @@ function SliceFileName(filename) {
     const fromtime = `${match[2].slice(8, 10)}:${match[2].slice(10, 12)}:${match[2].slice(12, 14)}`;
     const totime = `${match[3].slice(8, 10)}:${match[3].slice(10, 12)}:${match[3].slice(12, 14)}`;
     const divisename = match[1];
+   // console.log({ filename, divisename, date, fromtime, totime });
     return { filename, divisename, date, fromtime, totime };
   }
   return null;
@@ -49,20 +55,18 @@ const getSignedUrls = async (bucketName) => {
   let continuationToken = null;
   const newUrls = [];
 
-  try {
-    do {
-      console.log('Fetching objects from S3 bucket...');
+  const session = await mongoose.startSession();  // Start MongoDB session
 
+  try {
+    session.startTransaction();  // Begin transaction
+    
+    do {
       const params = { Bucket: bucketName, ContinuationToken: continuationToken };
       const command = new ListObjectsV2Command(params);
       const data = await s3Client.send(command);
       const urls = data.Contents.map(item => item.Key);
 
-      console.log(`Found ${urls.length} files in S3 bucket.`);
-
       for (let key of urls) {
-        console.log(`Generating signed URL for file: ${key}`);
-        
         const getObjectParams = { Bucket: bucketName, Key: key };
         const command = new GetObjectCommand(getObjectParams);
         const url = await getSignedUrl(s3Client, command, { expiresIn: 432000 }); // 5 days expiration (432000 seconds)
@@ -71,9 +75,8 @@ const getSignedUrls = async (bucketName) => {
 
         if (extractedData) {
           const { filename, divisename, date, fromtime, totime } = extractedData;
-          console.log(`Extracted data for ${filename}:`, extractedData);
-          
           newUrls.push({ url, filename, divisename, date, fromtime, totime });
+          // console.log(`Prepared URL: ${url} with extracted data:`, extractedData);
         }
       }
 
@@ -81,25 +84,29 @@ const getSignedUrls = async (bucketName) => {
     } while (continuationToken);
 
     if (newUrls.length > 0) {
-      console.log(`Inserting ${newUrls.length} records into MongoDB...`);
-      
-      try {
-        await testvidios.insertMany(newUrls); // Insert all collected records at once
-        console.log(`Successfully inserted ${newUrls.length} records into MongoDB.`);
-      } catch (error) {
-        console.error('Error inserting records into MongoDB:', error);
-      }
+      await testvidios.deleteMany({}, { session });  // Delete all existing documents in the collection
+      await testvidios.insertMany(newUrls, { session });  // Insert new URLs
+      // console.log(`Stored ${newUrls.length} new URLs.`);
     }
 
+    await session.commitTransaction();  // Commit transaction
+    session.endSession();  // End session
+
   } catch (error) {
-    console.error('Error fetching or storing signed URLs:', error);
+    await session.abortTransaction();  // Rollback transaction on error
+    session.endSession();  // End session
+    // console.error('Error fetching or storing signed URLs:', error);
   }
 };
 
+let intervalId;
+let isRunning = false;
+let lastStartSignalTime = null;
+let stopSignalReceived = false;
+let stopTimeoutId;
 
-const runTaskEveryInterval = async () => {
-  const interval = 20 * 1000; 
-
+const startScheduledTasks = () => {
+  const interval = 15 * 1000; // 15 seconds in milliseconds
 
   const executeTask = async () => {
     console.log('Starting the task...');
@@ -107,10 +114,68 @@ const runTaskEveryInterval = async () => {
     console.log('Task completed, waiting for the next interval...');
   };
 
+  if (!isRunning) {
+    isRunning = true;
 
-  executeTask();
-  setInterval(executeTask, interval);
+    // Run the task initially and set the interval
+    executeTask();
+    intervalId = setInterval(executeTask, interval);
+
+    // Set up the timeout to stop the task if no "start" signal received within 2 minutes
+    stopTimeoutId = setTimeout(() => {
+      if (!stopSignalReceived) {
+        console.log('No start signal received in 2 minutes. Stopping task...');
+        clearInterval(intervalId);
+        isRunning = false;
+      }
+    }, 10 * 60 * 1000); // 2 minutes timeout
+  }
 };
 
+const stopScheduledTasks = () => {
+  stopSignalReceived = true;
+  console.log('Stop signal received.');
+  clearInterval(intervalId); // Stop the interval
+  clearTimeout(stopTimeoutId); // Clear the timeout
+  isRunning = false;
+};
 
-runTaskEveryInterval();
+app.use(express.json());
+
+// Endpoint to handle start and stop signals
+app.post('/signal', (req, res) => {
+  const { action } = req.body;
+
+  if (action === 'start') {
+    lastStartSignalTime = Date.now();
+    stopSignalReceived = false;
+    console.log('Start signal received.');
+    // If task is not running, start the task
+    if (!isRunning) {
+      startScheduledTasks();
+    }
+
+    // Reset the timeout as the start signal is received within the 2-minute window
+    clearTimeout(stopTimeoutId);
+    stopTimeoutId = setTimeout(() => {
+      if (!stopSignalReceived) {
+        console.log('No start signal received in 2 minutes. Stopping task...');
+        clearInterval(intervalId);
+        isRunning = false;
+      }
+    }, 2 * 60 * 1000); // Reset 2 minutes timeout
+
+    res.status(200).send('Start signal processed.');
+  } else if (action === 'stop') {
+    stopScheduledTasks();
+    res.status(200).send('Task stopped.');
+  } else {
+    res.status(400).send('Invalid action.');
+  }
+});
+
+
+
+app.listen(3000, () => {
+  console.log('Server is running on port 3000');
+});
