@@ -2,8 +2,7 @@ const { S3Client, ListObjectsV2Command, GetObjectCommand } = require('@aws-sdk/c
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 require('dotenv').config();
 const connectDB = require('mb64-connect');
-
-connectDB(process.env.MONGODB_URI);
+const mongoose = require('mongoose');
 
 const testvidios = connectDB.validation('testvidios', {
   url: { type: String, required: true },
@@ -13,6 +12,8 @@ const testvidios = connectDB.validation('testvidios', {
   fromtime: { type: String, required: false },
   totime: { type: String, required: false }
 }, { timestamps: false });
+
+connectDB(process.env.MONGODB_URI);
 
 const s3Client = new S3Client({
   region: process.env.AWS_REGION,
@@ -36,11 +37,13 @@ const extractFilename = (url) => {
 function SliceFileName(filename) {
   const match = filename.match(/^(Device-\d+)-(\d{14})-(\d{14})$/);
   if (match) {
-    const date = `${match[2].slice(0, 2)}-${match[2].slice(2, 4)}-${match[2].slice(4, 8)}`;
-    const fromtime = `${match[2].slice(8, 10)}:${match[2].slice(10, 12)}:${match[2].slice(12, 14)}`;
-    const totime = `${match[3].slice(8, 10)}:${match[3].slice(10, 12)}:${match[3].slice(12, 14)}`;
-    const divisename = match[1];
-    return { filename, divisename, date, fromtime, totime };
+    return {
+      filename,
+      divisename: match[1],
+      date: `${match[2].slice(0, 2)}-${match[2].slice(2, 4)}-${match[2].slice(4, 8)}`,
+      fromtime: `${match[2].slice(8, 10)}:${match[2].slice(10, 12)}:${match[2].slice(12, 14)}`,
+      totime: `${match[3].slice(8, 10)}:${match[3].slice(10, 12)}:${match[3].slice(12, 14)}`
+    };
   }
   return null;
 }
@@ -48,69 +51,48 @@ function SliceFileName(filename) {
 const getSignedUrls = async (bucketName) => {
   let continuationToken = null;
   const newUrls = [];
-
+  const session = await mongoose.startSession();
   try {
-    do {
-      console.log('Fetching objects from S3 bucket...');
-
-      const params = { Bucket: bucketName, ContinuationToken: continuationToken };
-      const command = new ListObjectsV2Command(params);
-      const data = await s3Client.send(command);
-      const urls = data.Contents.map(item => item.Key);
-
-      console.log(`Found ${urls.length} files in S3 bucket.`);
-
-      for (let key of urls) {
-        console.log(`Generating signed URL for file: ${key}`);
+    await session.withTransaction(async () => {
+      do {
+        const params = { Bucket: bucketName, ContinuationToken: continuationToken };
+        const command = new ListObjectsV2Command(params);
+        const data = await s3Client.send(command);
         
-        const getObjectParams = { Bucket: bucketName, Key: key };
-        const command = new GetObjectCommand(getObjectParams);
-        const url = await getSignedUrl(s3Client, command, { expiresIn: 432000 }); // 5 days expiration (432000 seconds)
-
-        const extractedData = extractFilename(url);
-
-        if (extractedData) {
-          const { filename, divisename, date, fromtime, totime } = extractedData;
-          console.log(`Extracted data for ${filename}:`, extractedData);
+        for (let item of data.Contents || []) {
+          const getObjectParams = { Bucket: bucketName, Key: item.Key };
+          const command = new GetObjectCommand(getObjectParams);
+          const url = await getSignedUrl(s3Client, command, { expiresIn: 432000 });
           
-          newUrls.push({ url, filename, divisename, date, fromtime, totime });
+          const extractedData = extractFilename(url);
+          if (extractedData) {
+            newUrls.push({ url, ...extractedData });
+          }
         }
+
+        continuationToken = data.IsTruncated ? data.NextContinuationToken : null;
+      } while (continuationToken);
+
+      if (newUrls.length > 0) {
+        await testvidios.deleteMany({}, { session });
+        await testvidios.insertMany(newUrls, { session });
       }
-
-      continuationToken = data.IsTruncated ? data.NextContinuationToken : null;
-    } while (continuationToken);
-
-    if (newUrls.length > 0) {
-      console.log(`Inserting ${newUrls.length} records into MongoDB...`);
-      
-      try {
-        await testvidios.insertMany(newUrls); // Insert all collected records at once
-        console.log(`Successfully inserted ${newUrls.length} records into MongoDB.`);
-      } catch (error) {
-        console.error('Error inserting records into MongoDB:', error);
-      }
-    }
-
+    });
   } catch (error) {
-    console.error('Error fetching or storing signed URLs:', error);
+    console.error('Transaction error:', error);
+    await session.abortTransaction();
+  } finally {
+    session.endSession();
   }
 };
 
-
-const runTaskEveryInterval = async () => {
-  const interval = 20 * 1000; 
-
-
-  const executeTask = async () => {
-    console.log('Starting the task...');
+const continuousSync = async () => {
+  while (true) {
+    console.log('Starting the synchronization task...');
     await getSignedUrls(process.env.AWS_BUCKET_NAME);
-    console.log('Task completed, waiting for the next interval...');
-  };
-
-
-  executeTask();
-  setInterval(executeTask, interval);
+    console.log('Task completed. Waiting for 10 seconds before restarting...');
+    await new Promise(resolve => setTimeout(resolve, 10000));
+  }
 };
 
-
-runTaskEveryInterval();
+continuousSync();
