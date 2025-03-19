@@ -3,6 +3,7 @@ const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 require('dotenv').config();
 const connectDB = require('mb64-connect');
 const mongoose = require('mongoose');
+const cron = require('node-cron');
 
 const testvidios = connectDB.validation(
   'testvidios',
@@ -90,13 +91,11 @@ const getSignedUrls = async (bucketName) => {
   }
 };
 
-const continuousSync = async () => {
-  while (true) {
-    console.log('Starting the synchronization task...');
-    await getSignedUrls(process.env.AWS_BUCKET_NAME);
-    console.log('Task completed. Waiting for 10 seconds before restarting...');
-    await new Promise((resolve) => setTimeout(resolve, 10000));
-  }
-};
+// Schedule the job to run every Monday at midnight (00:00)
+cron.schedule('0 0 * * 1', async () => {
+  console.log('Starting the synchronization task...');
+  await getSignedUrls(process.env.AWS_BUCKET_NAME);
+  console.log('Synchronization task completed.');
+});
 
-continuousSync();
+console.log('Cron job scheduled: Runs every Monday at midnight.');
